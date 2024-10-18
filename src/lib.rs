@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Version(u32);
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestMessage {
     pub method: String,
     pub fullpath: String,
@@ -11,6 +8,11 @@ pub struct RequestMessage {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
+
+// this is annoying.
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Version(u32);
 
 impl From<actix_web::http::Version> for Version {
     fn from(value: actix_web::http::Version) -> Self {

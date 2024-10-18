@@ -43,14 +43,21 @@ async fn basic_auth_validator(
         ));
     }
 
-    if credentials.password().is_none() || credentials.password().unwrap() != *SECRET {
-        return Err((
+    if let Some(password) = credentials.password() {
+        if password == *SECRET {
+            Ok(req)
+        } else {
+            Err((
+                actix_web::error::ErrorUnauthorized(AuthenticationError::new(Basic::new())),
+                req,
+            ))
+        }
+    } else {
+        Err((
             actix_web::error::ErrorUnauthorized(AuthenticationError::new(Basic::new())),
             req,
-        ));
+        ))
     }
-
-    Ok(req)
 }
 
 #[derive(Clone)]

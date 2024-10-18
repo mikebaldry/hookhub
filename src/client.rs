@@ -9,7 +9,11 @@ use env_logger::Env;
 use futures::prelude::*;
 use hookhub::RequestMessage;
 use reqwest::{Client, Method};
-use tokio::{signal::unix::SignalKind, time::Instant};
+use tokio::{
+    signal::unix::SignalKind,
+    sync::broadcast,
+    time::{self, interval_at, Instant},
+};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use clap::Parser;
@@ -41,35 +45,87 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let mut sigint = std::pin::pin!(interrupt_signal());
-
-    let http = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .read_timeout(Duration::from_secs(30))
-        .build()?;
-
     let remote = validate_and_update_remote(args.remote)?;
     let local = validate_and_update_local(args.local)?;
 
     info!("Local origin: {}", local);
     info!("Remote origin: {}", remote);
 
+    let (shutdown, _) = broadcast::channel::<()>(1);
+
+    let shutdown_tx = shutdown.clone();
+
+    tokio::spawn(async move {
+        let mut sigint = std::pin::pin!(interrupt_signal());
+        tokio::select! {
+            _ = sigint.as_mut() => {
+                let _ = shutdown_tx.send(());
+                warn!("SIGINT received, shutting down");
+            }
+        }
+    });
+
+    loop {
+        let result = connect_and_run(
+            local.clone(),
+            remote.clone(),
+            args.secret.clone(),
+            shutdown.clone(),
+        )
+        .await;
+        if let Err(e) = result {
+            error!("Failed with error: {:?}", e);
+            error!("Trying again in 5 seconds...");
+
+            let mut shutdown = shutdown.clone().subscribe();
+
+            tokio::select! {
+                _ = time::sleep(Duration::from_secs(5)) => {
+                },
+                _ = shutdown.recv() => {
+                    break;
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+async fn connect_and_run(
+    local: Url,
+    remote: Url,
+    secret: String,
+    shutdown: broadcast::Sender<()>,
+) -> Result<()> {
     let mut request = remote.as_str().into_client_request()?;
-    let auth = STANDARD.encode(format!("{}:{}", VERSION, args.secret));
+    let auth = STANDARD.encode(format!("{}:{}", VERSION, secret));
     request
         .headers_mut()
         .insert("Authorization", format!("Basic {}", auth).parse()?);
 
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(30))
+        .build()?;
+
     let (mut stream, _) = connect_async(request).await?;
+
+    info!("Connected successfully, waiting for events");
+
+    let start = Instant::now() + Duration::from_secs(20);
+    let mut interval = interval_at(start, Duration::from_secs(20));
+
+    let mut shutdown = shutdown.subscribe();
 
     loop {
         tokio::select! {
             Some(message) = stream.next()  => {
                 match message? {
                     Message::Binary(msg) => {
-                        let message: RequestMessage = rmp_serde::from_slice(&msg)?;
-
-                        forward_request(message, local.clone(), http.clone());
+                        forward_request(rmp_serde::from_slice(&msg)?, local.clone(), http.clone());
                     },
                     Message::Close(_) => {
                         info!("Server closed the connection");
@@ -78,8 +134,10 @@ async fn main() -> Result<()> {
                     _ => { }
                 }
             },
-            _ = sigint.as_mut() => {
-                warn!("SIGINT received, shutting down");
+            _ = interval.tick() => {
+                stream.send(Message::Ping(vec![5, 4, 3, 2, 1])).await?;
+            },
+            _ = shutdown.recv() => {
                 break;
             }
         }
