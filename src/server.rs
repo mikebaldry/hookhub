@@ -32,6 +32,20 @@ async fn basic_auth_validator(
     req: ServiceRequest,
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, (actix_web::Error, ServiceRequest)> {
+    if let Some(password) = credentials.password() {
+        if password != *SECRET {
+            return Err((
+                actix_web::error::ErrorUnauthorized(AuthenticationError::new(Basic::new())),
+                req,
+            ))
+        }
+    } else {
+        return Err((
+            actix_web::error::ErrorUnauthorized(AuthenticationError::new(Basic::new())),
+            req,
+        ))
+    }
+
     if credentials.user_id() != VERSION {
         return Err((
             actix_web::error::ErrorBadRequest(format!(
@@ -43,21 +57,7 @@ async fn basic_auth_validator(
         ));
     }
 
-    if let Some(password) = credentials.password() {
-        if password == *SECRET {
-            Ok(req)
-        } else {
-            Err((
-                actix_web::error::ErrorUnauthorized(AuthenticationError::new(Basic::new())),
-                req,
-            ))
-        }
-    } else {
-        Err((
-            actix_web::error::ErrorUnauthorized(AuthenticationError::new(Basic::new())),
-            req,
-        ))
-    }
+    Ok(req)
 }
 
 #[derive(Clone)]
