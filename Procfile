@@ -1,0 +1,1 @@
+web: HOOKHUB_BIND_ADDR=0.0.0.0:$PORT ./target/release/server
