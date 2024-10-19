@@ -1,4 +1,4 @@
-use std::{ops::Deref, time::Duration};
+use std::{ops::Deref, sync::LazyLock, time::Duration};
 
 use actix_web::{
     dev::{ConnectionInfo, ServiceRequest},
@@ -16,15 +16,14 @@ use actix_ws::Message;
 use env_logger::Env;
 use futures_util::StreamExt as _;
 use hookhub::RequestMessage;
-use lazy_static::lazy_static;
 use log::{info, warn};
 use tokio::sync::broadcast;
 
-lazy_static! {
-    static ref SECRET: String = std::env::var("HOOKHUB_SECRET").unwrap_or("abc123".to_string());
-    static ref BIND_ADDR: String =
-        std::env::var("HOOKHUB_BIND_ADDR").unwrap_or("127.0.0.1:9873".to_string());
-}
+static SECRET: LazyLock<String> =
+    LazyLock::new(|| std::env::var("HOOKHUB_SECRET").unwrap_or("abc123".to_string()));
+
+static BIND_ADDR: LazyLock<String> =
+    LazyLock::new(|| std::env::var("HOOKHUB_BIND_ADDR").unwrap_or("127.0.0.1:9873".to_string()));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -37,13 +36,13 @@ async fn basic_auth_validator(
             return Err((
                 actix_web::error::ErrorUnauthorized(AuthenticationError::new(Basic::new())),
                 req,
-            ))
+            ));
         }
     } else {
         return Err((
             actix_web::error::ErrorUnauthorized(AuthenticationError::new(Basic::new())),
             req,
-        ))
+        ));
     }
 
     if credentials.user_id() != VERSION {
@@ -160,13 +159,13 @@ async fn handle_receive(
     payload: web::Bytes,
     broadcaster: Data<Broadcaster>,
 ) -> impl Responder {
-    let mut headers = vec![];
-
-    for (key, value) in req.headers().iter() {
-        if key != "host" && key != "origin" {
-            headers.push((key.as_str().to_owned(), value.to_str().unwrap().to_owned()));
-        }
-    }
+    let headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .filter(|(k, _)| k.as_str() != "host")
+        .filter(|(k, _)| k.as_str() != "origin")
+        .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap().to_owned()))
+        .collect();
 
     let message = RequestMessage {
         method: req.head().method.to_string(),
