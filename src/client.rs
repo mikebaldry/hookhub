@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fs, io, path::PathBuf, sync::LazyLock, time::Duration};
 
 use anyhow::Result;
 use async_tungstenite::{
@@ -16,25 +16,81 @@ use tokio::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use log::{error, info, warn};
 use url::Url;
 
-/// Hookhub client - connect to a Hookhub server and receive webhooks
-#[derive(Parser, Debug)]
+mod history;
+mod history_db;
+
+pub static ROOT_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
+    let home = homedir::my_home().unwrap().unwrap();
+
+    match fs::create_dir(&home) {
+        Ok(_) => home.join(".hookhub"),
+        Err(e) => {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                home.join(".hookhub")
+            } else {
+                panic!("{}", e);
+            }
+        }
+    }
+});
+
+pub static HISTORY_DB: LazyLock<history_db::Db> =
+    LazyLock::new(|| history_db::Db::new(&ROOT_PATH.join("history")).unwrap());
+
+/// Hookhub client
+#[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Remote origin that will relay requests (e.g. wss://something.herokuapp.com)
-    #[arg(long, env = "HOOKHUB_REMOTE")]
-    remote: String,
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    /// Remote server secret used to authenticate
-    #[arg(long, env = "HOOKHUB_SECRET")]
-    secret: String,
+#[derive(Subcommand)]
+enum Commands {
+    /// Connect to a remote server and relay requests to a local server
+    Connect {
+        /// Remote origin that will relay requests (e.g. wss://something.herokuapp.com)
+        #[arg(long, env = "HOOKHUB_REMOTE")]
+        remote: String,
 
-    /// Local origin to relay the requests to (e.g. https://dealers.carwow.local)
-    #[arg(long, env = "HOOKHUB_LOCAL")]
-    local: String,
+        /// Remote server secret used to authenticate
+        #[arg(long, env = "HOOKHUB_SECRET")]
+        secret: String,
+
+        /// Local origin to relay requests to (e.g. https://dealers.carwow.local)
+        #[arg(long, env = "HOOKHUB_LOCAL")]
+        local: String,
+    },
+    /// Manage and replay previously received requests
+    History {
+        #[command(subcommand)]
+        command: HistoryCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum HistoryCommands {
+    /// List previously received requests
+    List,
+    /// Delete a previously received request
+    Delete {
+        /// Identifier of the request
+        id: u32,
+    },
+    /// Clear all previously received requests
+    Clear,
+    /// Replay a previously received request
+    Replay {
+        /// Identifier of the request
+        id: u32,
+        /// Local origin to relay requests to (e.g. https://dealers.carwow.local)
+        #[arg(long, env = "HOOKHUB_LOCAL")]
+        local: String,
+    },
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -45,8 +101,19 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let remote = validate_and_update_remote(args.remote)?;
-    let local = validate_and_update_local(args.local)?;
+    match args.command {
+        Commands::Connect {
+            remote,
+            secret,
+            local,
+        } => handle_connect(remote, secret, local).await,
+        Commands::History { command } => history::handle(command).await,
+    }
+}
+
+async fn handle_connect(remote: String, secret: String, local: String) -> Result<()> {
+    let remote = validate_and_update_remote(remote)?;
+    let local = validate_and_update_local(local)?;
 
     info!("Local origin: {}", local);
     info!("Remote origin: {}", remote);
@@ -69,7 +136,7 @@ async fn main() -> Result<()> {
         let result = connect_and_run(
             local.clone(),
             remote.clone(),
-            args.secret.clone(),
+            secret.clone(),
             shutdown.clone(),
         )
         .await;
