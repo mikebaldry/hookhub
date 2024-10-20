@@ -169,7 +169,7 @@ async fn handle_receive(
 
     let message = RequestMessage {
         method: req.head().method.to_string(),
-        fullpath: req.head().uri.to_owned().to_string(),
+        fullpath: req.head().uri.to_string(),
         version: req.head().version.into(),
         headers,
         body: payload.into(),
