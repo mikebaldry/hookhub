@@ -12,7 +12,7 @@ pub struct Db {
     path: PathBuf,
 }
 
-type ItemId = String;
+pub type ItemId = String;
 
 impl Db {
     pub fn new(path: &PathBuf) -> Result<Self> {
@@ -28,7 +28,7 @@ impl Db {
         }
     }
 
-    pub async fn get(&self, id: ItemId) -> Result<Option<Item>> {
+    pub async fn get(&self, id: &ItemId) -> Result<Option<Item>> {
         let path = self.path.join(format!("{}.json", id));
 
         self.read(&path).await
@@ -58,7 +58,7 @@ impl Db {
             .collect())
     }
 
-    pub async fn delete(&self, id: ItemId) -> Result<()> {
+    pub async fn delete(&self, id: &ItemId) -> Result<()> {
         let path = self.path.join(format!("{}.json", id));
 
         self.rm(&path).await

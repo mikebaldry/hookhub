@@ -1,6 +1,10 @@
-use crate::{HistoryCommands, HISTORY_DB};
+use crate::{
+    forward_request, history_db::ItemId, http_client, prepare_local_url, HistoryCommands,
+    HISTORY_DB,
+};
 use anyhow::Result;
-use log::info;
+use log::{error, info};
+use url::Url;
 
 pub async fn handle(command: HistoryCommands) -> Result<()> {
     match command {
@@ -29,14 +33,36 @@ async fn handle_list() -> Result<()> {
     Ok(())
 }
 
-async fn handle_delete(id: u32) -> Result<()> {
+async fn handle_delete(id: ItemId) -> Result<()> {
+    HISTORY_DB.delete(&id).await?;
+
+    info!("Item deleted");
+
     Ok(())
 }
 
-async fn handle_replay(id: u32, local: String) -> Result<()> {
+async fn handle_replay(id: ItemId, mut local: Url) -> Result<()> {
+    let item = HISTORY_DB.get(&id).await?;
+
+    match item {
+        Some(item) => {
+            prepare_local_url(&mut local)?;
+            let http = http_client()?;
+
+            let _ = forward_request(item.request, local.clone(), http.clone()).await;
+        }
+        None => {
+            error!("{} not found", id);
+        }
+    };
+
     Ok(())
 }
 
 async fn handle_clear() -> Result<()> {
+    HISTORY_DB.clear().await?;
+
+    info!("History has been cleared");
+
     Ok(())
 }

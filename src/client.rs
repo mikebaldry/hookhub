@@ -5,13 +5,16 @@ use async_tungstenite::{
     tokio::connect_async,
     tungstenite::{client::IntoClientRequest, Message},
 };
+use chrono::Utc;
 use env_logger::Env;
 use futures::prelude::*;
+use history_db::ItemId;
 use hookhub::RequestMessage;
 use reqwest::{Client, Method};
 use tokio::{
     signal::unix::SignalKind,
     sync::broadcast,
+    task::JoinHandle,
     time::{self, interval_at, Instant},
 };
 
@@ -55,15 +58,15 @@ enum Commands {
     Connect {
         /// Remote origin that will relay requests (e.g. wss://something.herokuapp.com)
         #[arg(long, env = "HOOKHUB_REMOTE")]
-        remote: String,
+        remote: Url,
 
         /// Remote server secret used to authenticate
         #[arg(long, env = "HOOKHUB_SECRET")]
         secret: String,
 
-        /// Local origin to relay requests to (e.g. https://dealers.carwow.local)
+        /// Local origin to relay requests to (e.g. https://localhost:3000/)
         #[arg(long, env = "HOOKHUB_LOCAL")]
-        local: String,
+        local: Url,
     },
     /// Manage and replay previously received requests
     History {
@@ -79,17 +82,17 @@ enum HistoryCommands {
     /// Delete a previously received request
     Delete {
         /// Identifier of the request
-        id: u32,
+        id: ItemId,
     },
     /// Clear all previously received requests
     Clear,
     /// Replay a previously received request
     Replay {
         /// Identifier of the request
-        id: u32,
-        /// Local origin to relay requests to (e.g. https://dealers.carwow.local)
+        id: ItemId,
+        /// Local origin to relay requests to (e.g. https://localhost:3000/)
         #[arg(long, env = "HOOKHUB_LOCAL")]
-        local: String,
+        local: Url,
     },
 }
 
@@ -111,9 +114,9 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn handle_connect(remote: String, secret: String, local: String) -> Result<()> {
-    let remote = validate_and_update_remote(remote)?;
-    let local = validate_and_update_local(local)?;
+async fn handle_connect(mut remote: Url, secret: String, mut local: Url) -> Result<()> {
+    prepare_remote_url(&mut remote)?;
+    prepare_local_url(&mut local)?;
 
     info!("Local origin: {}", local);
     info!("Remote origin: {}", remote);
@@ -173,10 +176,7 @@ async fn connect_and_run(
         .headers_mut()
         .insert("Authorization", format!("Basic {}", auth).parse()?);
 
-    let http = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .read_timeout(Duration::from_secs(30))
-        .build()?;
+    let http = http_client()?;
 
     let (mut stream, _) = connect_async(request).await?;
 
@@ -192,7 +192,9 @@ async fn connect_and_run(
             Some(message) = stream.next()  => {
                 match message? {
                     Message::Binary(msg) => {
-                        forward_request(rmp_serde::from_slice(&msg)?, local.clone(), http.clone());
+                        let req : RequestMessage = rmp_serde::from_slice(&msg)?;
+                        HISTORY_DB.add(&history_db::Item::new(Utc::now(), req.clone())).await.unwrap();
+                        forward_request(req, local.clone(), http.clone());
                     },
                     Message::Close(_) => {
                         info!("Server closed the connection");
@@ -223,31 +225,33 @@ async fn interrupt_signal() {
         .await;
 }
 
-fn validate_and_update_remote(remote: String) -> Result<Url> {
-    let mut url = Url::parse(&remote)?;
-
-    if url.scheme() != "ws" && url.scheme() != "wss" {
+pub fn prepare_remote_url(remote: &mut Url) -> Result<()> {
+    if remote.scheme() != "ws" && remote.scheme() != "wss" {
         return Err(anyhow::anyhow!("remote must use ws or wss scheme"));
     }
 
-    url.set_path("/__hookhub__/");
+    if remote.path() != "/" {
+        warn!("Remote path isn't supported and will always be /__hookhub__/");
+        remote.set_path("/__hookhub__/");
+    }
 
-    Ok(url)
+    Ok(())
 }
 
-fn validate_and_update_local(local: String) -> Result<Url> {
-    let mut url = Url::parse(&local)?;
-
-    if url.scheme() != "http" && url.scheme() != "https" {
+pub fn prepare_local_url(local: &mut Url) -> Result<()> {
+    if local.scheme() != "http" && local.scheme() != "https" {
         return Err(anyhow::anyhow!("local must use http or https scheme"));
     }
 
-    url.set_path("/");
+    if local.path() != "/" {
+        warn!("Local path isn't supported and will be ignored");
+        local.set_path("/");
+    }
 
-    Ok(url)
+    Ok(())
 }
 
-fn forward_request(req: RequestMessage, mut local: Url, http: Client) {
+fn forward_request(req: RequestMessage, mut local: Url, http: Client) -> JoinHandle<()> {
     tokio::spawn(async move {
         local.set_path(&req.fullpath);
 
@@ -281,5 +285,16 @@ fn forward_request(req: RequestMessage, mut local: Url, http: Client) {
                 error!("Forwarded request error: {}", e);
             }
         }
-    });
+
+        
+    })
+}
+
+pub fn http_client() -> Result<reqwest::Client> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(30))
+        .build()?;
+
+    Ok(client)
 }
