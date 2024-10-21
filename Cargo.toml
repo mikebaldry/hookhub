@@ -3,15 +3,6 @@ name = "hookhub"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "server"
-path = "src/server.rs"
-
-[[bin]]
-name = "client"
-path = "src/client.rs"
-
-
 [dependencies]
 actix-web = "4.9.0"
 actix-web-httpauth = "0.8.2"
@@ -34,7 +25,7 @@ serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.132"
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-util = "0.7.12"
-url = "2.5.2"
+url = { version = "2.5.2", features = ["serde"] }
 names = { version = "0.14.0", default-features = false }
 
 # this allows build on github actions, even though it's not used directly
